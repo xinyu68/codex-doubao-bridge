@@ -11,6 +11,7 @@ import { ManagedBridgeClient } from "../managed-client.mjs";
 import { bridgeState, stopIdleManagedBridge } from "../service.mjs";
 
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageVersion = JSON.parse(await fs.readFile(path.join(source, "package.json"), "utf8")).version;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check, timeout = 7000) {
   const deadline = Date.now() + timeout;
@@ -108,7 +109,7 @@ test("a crashed MCP releases its lease while another MCP keeps the shared worker
   await until(() => output.includes('"id":1'));
   const state = await bridgeState(config);
   assert.equal(state.lifecycle.clients, 2);
-  assert.equal(JSON.parse(output.trim()).result.serverInfo.version, "0.5.0");
+  assert.equal(JSON.parse(output.trim()).result.serverInfo.version, packageVersion);
   await new Promise((resolve) => { child.once("exit", resolve); child.kill("SIGKILL"); });
   await until(async () => (await bridgeState(config)).lifecycle.clients === 1);
   await delay(850);

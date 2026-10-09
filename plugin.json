@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "codex-doubao-bridge",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "使用已登录的豆包网页进行问答、参考图视频生成、下载和续接。",
   "author": { "name": "xinyu68", "email": "1693784423@qq.com" },
   "homepage": "https://github.com/xinyu68/codex-doubao-bridge",

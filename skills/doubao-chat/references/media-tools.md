@@ -34,6 +34,24 @@ node .\media-cli.mjs --request .\requests\session.json
 
 创建session后，所有媒体操作固定到其标签页，不跟随用户活跃页。接续已有成片时，可先tabs查明tabId，再session绑定该页。
 
+## Windows 中文请求文件
+
+优先使用 MCP 的结构化参数。使用媒体 CLI 时，让它读取 UTF-8 JSON 文件，不把中文 JSON 通过 Windows PowerShell 5.1 的默认管道传给 Node.js。管道受 `$OutputEncoding` 控制，可能把中文先替换成问号；Node.js 再按 UTF-8 读取也无法恢复。文件编码和管道编码是不同设置，参见 [Microsoft 字符编码说明](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_character_encoding?view=powershell-5.1)。
+
+对已按操作要求准备好的 `$taskRequest` 对象，显式写入 UTF-8 文件，例如在真实运行目录下执行：
+
+~~~powershell
+$taskRequestPath = Join-Path $PWD 'requests\request.json'
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $taskRequestPath) | Out-Null
+$taskJson = $taskRequest | ConvertTo-Json -Depth 20
+[System.IO.File]::WriteAllText($taskRequestPath, $taskJson, [System.Text.UTF8Encoding]::new($false))
+$taskReadBack = Get-Content -LiteralPath $taskRequestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+~~~
+
+先核对回读后的中文字段与原文一致，再运行 `node .\media-cli.mjs --request $taskRequestPath`。不要用默认 `>` 或 `Out-File` 创建 JSON，它们在 Windows PowerShell 5.1 中可能写成 UTF-16。包含中文的 Windows PowerShell 5.1 `.ps1` 脚本本身要保存为 UTF-8 with BOM，避免源文件在执行前已被误读。
+
+仅设置控制台显示编码不能保证管道正确。确实需要管道时，仅在该次调用内设置 `$OutputEncoding` 为 UTF-8，结束后恢复；避免通过 `node -e` 拼接复杂提示词和 JSON 的引号。编码验证先在本地完成，不发送额外豆包消息或生成视频。数字算术回复正确只证明连通性，中文问答是否验证要单独说明。
+
 ## 先传图，再生成
 
 先inspect具体session。输入不唯一时，提供检查得到的inputSelector；上传菜单未展开时可提供uploadTriggerSelector。不能猜测未检查的选择器。

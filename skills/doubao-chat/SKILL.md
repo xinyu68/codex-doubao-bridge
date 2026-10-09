@@ -15,6 +15,14 @@ MCP 基础名称：doubao_local；插件会添加命名空间，按当前工具�
 - 不自行扩展为多轮咨询；不得把首页文案、侧栏或草稿当作回复
 - doubao_status 用于连接诊断，不能替代答案
 
+## Windows 中文传参
+
+- 优先调用 MCP 工具的结构化参数，不用临时 PowerShell 管道手写 MCP stdin，也不把复杂中文提示词拼进 `node -e`。现有 MCP 和媒体 CLI 按 UTF-8 读写，不能恢复在进入 Node.js 前已变成问号的文字
+- Windows PowerShell 5.1 的 `$OutputEncoding` 默认可能为 ASCII，`中文 JSON | node ...` 会把中文替换为 `?`；仅设置 `chcp 65001` 或 `[Console]::OutputEncoding` 不能代替管道输入编码。必须用原生命令管道时，在该次调用内将 `$OutputEncoding` 设为 `[System.Text.UTF8Encoding]::new($false)`，并在 finally 恢复原值，不修改系统设置或用户 profile
+- 媒体 CLI 备用调用采用 UTF-8 JSON 请求文件：读文件显式指定 UTF-8，写文件显式使用 UTF-8，再执行 `media-cli.mjs --request <绝对路径>`；不用默认 `>` / Out-File 写请求文件。具体示例见 [媒体操作说明](references/media-tools.md#windows-中文请求文件)。简单文字备用调用可用 `node <bridgeRoot>/cli.mjs $taskPrompt` 直接传参数，避免管道
+- 已知原文包含中文时，发送前对比原始字符串与本地回读结果。发现字符被替换为问号或乱码就先修复，不能把损坏内容发给豆包；用户原文中的正常问号不属于编码错误
+- 连通性测试与中文测试分别记录：纯数字或英文的正确回复不证明中文传输正常。修复编码先离线验证；只有用户已授权中文问答测试时才实际发送，不为编码检查追加视频生成或其他消息
+
 ## 图片与视频
 
 用户要求规划、评估、生成、测试或续接豆包视频时，先读 [视频制作流程](references/video-workflow.md)，按当前任务选择准备、生成或验收环节。仅评估不自动上传或提交。实际生成使用媒体接口，不把本地图片路径写入文字当作上传。详细操作和参数见 [媒体操作说明](references/media-tools.md)。

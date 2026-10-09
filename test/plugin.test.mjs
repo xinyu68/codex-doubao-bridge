@@ -9,6 +9,7 @@ import { runtimeFiles, setupPlugin, pluginStatus, resolveRuntime } from "../scri
 import { readConfiguration } from "../service.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageVersion = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")).version;
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "doubao-plugin-"));
   t.after(async () => {
@@ -42,7 +43,7 @@ test("plugin setup separates cache from user data and preserves keys and jobs ac
   const nextRoot = path.join(options.directory, "cache v2");
   await fs.cp(options.sourceRoot, nextRoot, { recursive: true });
   const manifest = JSON.parse(await fs.readFile(path.join(nextRoot, "plugin.json"), "utf8"));
-  manifest.version = "0.5.1";
+  manifest.version = manifest.version.replace(/\d+$/, (patch) => String(Number(patch) + 1));
   await fs.writeFile(path.join(nextRoot, "plugin.json"), JSON.stringify(manifest));
   assert.equal((await pluginStatus({ ...options, sourceRoot: nextRoot })).needsSetup, true);
   const second = await setupPlugin({ ...options, sourceRoot: nextRoot });
@@ -120,7 +121,7 @@ test("MCP discovers tools before setup and automatically connects after later se
     pending.set(requestId, (message) => { clearTimeout(timeout); pending.delete(requestId); resolve(message); });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }) + "\n");
   });
-  assert.equal((await call("initialize", { protocolVersion: "2024-11-05" })).result.serverInfo.version, "0.5.0");
+  assert.equal((await call("initialize", { protocolVersion: "2024-11-05" })).result.serverInfo.version, packageVersion);
   const listed = await call("tools/list");
   assert.ok(listed.result.tools.some((tool) => tool.name === "doubao_video_submit"));
   assert.equal((await call("tools/call", { name: "doubao_status" })).result.isError, true);
