@@ -1,7 +1,7 @@
 {
     "name":  "codex-doubao-bridge",
     "private":  true,
-    "version":  "0.3.1",
+    "version":  "0.4.0",
     "type":  "module",
     "author": {
         "name": "xinyu68",
@@ -15,6 +15,8 @@
                     "chat":  "node cli.mjs",
                     "mcp":  "node mcp-server.mjs",
                     "test":  "node --test test/*.test.mjs",
-                    "media":  "node media-cli.mjs"
+                    "media":  "node media-cli.mjs",
+                    "plugin:setup": "node scripts/plugin-runtime.mjs setup",
+                    "plugin:status": "node scripts/plugin-runtime.mjs status"
                 }
 }

@@ -5,8 +5,8 @@ description: "通过已登录豆包网页进行问答、独立文本委派，以
 
 # 豆包网页桥接
 
-安装后读取本技能目录中的 bridge-local.json，取得 bridgeRoot 和 mcpServer；不把发布仓库示例路径当作本机路径。若该文件缺失，按仓库 README 运行 scripts/install.ps1 完成桥接与 Skill 安装，仅复制 Skill 不会安装服务和扩展。
-MCP 默认名称：doubao_local。首次实际调用前按下方“连接与按需启动”检查服务。网页使用用户已有登录状态，不读取或输出 extension/config.js 密钥，不通过 Chrome 调试协议绕过扩展。
+先确定安装方式：本技能目录有 bridge-local.json 时读取其中的 bridgeRoot 和 mcpServer，这是旧版独立安装；没有该文件时，从本 SKILL.md 的真实绝对路径取两级父目录作为 pluginRoot，确认存在 plugin.json 和 scripts/plugin-runtime.mjs，执行 `node <pluginRoot>/scripts/plugin-runtime.mjs status` 取得 bridgeRoot（返回字段 root）。configured=false 时运行插件中的 doubao-setup Skill；needsSetup=true 时重新执行 setup，保留稳定运行目录。不把发布仓库示例路径或插件缓存当作运行目录。只有单独复制的 Skill、没有完整插件时，按仓库 README 运行 scripts/install.ps1。
+MCP 基础名称：doubao_local；插件会添加命名空间，按当前工具列表选择对应的 doubao_* 工具，不重复注册 standalone MCP。首次实际调用前按下方“连接与按需启动”检查服务。网页使用用户已有登录状态，不读取或输出 extension/config.js 密钥，不通过 Chrome 调试协议绕过扩展。
 
 ## 文字任务
 
@@ -32,7 +32,7 @@ MCP 默认名称：doubao_local。首次实际调用前按下方“连接与按�
 
 ## 连接与按需启动
 
-不依赖 Windows 计划任务，也不创建开机自启。安装目录来自 bridge-local.json；服务辅助脚本内部读取配置，不输出密钥。
+不依赖 Windows 计划任务，也不创建开机自启。安装目录来自独立安装的 bridge-local.json 或插件 status 返回的 root；服务辅助脚本内部读取配置，不输出密钥。插件也可执行 `node <pluginRoot>/scripts/plugin-runtime.mjs start` 按需启动。
 
 1. 每次开始实际豆包操作前，在 bridgeRoot 下执行 `node service.mjs status`；只有 `running=false` 时执行 `node service.mjs start`，或用 PowerShell 运行该目录的 start-bridge.ps1。start 会复用当前服务，在后台隐藏启动，返回状态；仅评估且不需要网页检查时不必启动
 2. 401、密钥不匹配、其他安装占用端口或连接超时不等于服务未启动；先报告诊断，不重复启动、不自动改密钥、不调用计划任务

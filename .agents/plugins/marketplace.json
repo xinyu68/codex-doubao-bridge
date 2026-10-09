@@ -1,0 +1,12 @@
+{
+  "name": "xinyu68",
+  "interface": { "displayName": "xinyu68 Plugins" },
+  "plugins": [
+    {
+      "name": "codex-doubao-bridge",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

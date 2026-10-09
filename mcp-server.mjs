@@ -3,13 +3,21 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mediaTools, mediaRoutesByTool } from "./media-api.mjs";
 
-const root = path.dirname(fileURLToPath(import.meta.url));
-const extensionConfig = path.join(root, "extension", "config.js");
+const root = process.env.DOUBAO_BRIDGE_ROOT
+  ? path.resolve(process.env.DOUBAO_BRIDGE_ROOT)
+  : path.dirname(fileURLToPath(import.meta.url));
+let resolveBridgeRoot = async () => root;
 
-function bridgeKey() {
+export function setBridgeRootResolver(resolver) {
+  resolveBridgeRoot = resolver;
+}
+
+function bridgeKey(bridgeRoot) {
   if (process.env.DOUBAO_BRIDGE_KEY) return process.env.DOUBAO_BRIDGE_KEY;
+  const extensionConfig = path.join(bridgeRoot, "extension", "config.js");
+  if (!fs.existsSync(extensionConfig)) throw new Error("Doubao bridge is not configured. Run the plugin setup Skill, or scripts/install.ps1 for a standalone installation.");
   const source = fs.readFileSync(extensionConfig, "utf8");
-  const match = source.match(/bridgeKey\s*=\s*"([^"]+)"/);
+  const match = source.match(/bridgeKey\s*=\s*["']([^"']+)["']/);
   if (!match || match[1].startsWith("REPLACE_")) {
     throw new Error("Set DOUBAO_BRIDGE_KEY or configure extension/config.js first");
   }
@@ -17,10 +25,11 @@ function bridgeKey() {
 }
 
 async function bridge(pathname, method = "GET", body) {
+  const bridgeRoot = await resolveBridgeRoot();
   const response = await fetch(`http://127.0.0.1:8765${pathname}`, {
     method,
     headers: {
-      authorization: `Bearer ${bridgeKey()}`,
+      authorization: `Bearer ${bridgeKey(bridgeRoot)}`,
       ...(body ? { "content-type": "application/json" } : {})
     },
     ...(body ? { body: JSON.stringify(body) } : {})
@@ -127,7 +136,7 @@ process.stdin.on("data", async (chunk) => {
           result: {
             protocolVersion: request.params?.protocolVersion || "2024-11-05",
             capabilities: { tools: {} },
-            serverInfo: { name: "doubao-local", version: "0.3.1" }
+            serverInfo: { name: "doubao-local", version: "0.4.0" }
           }
         });
         continue;

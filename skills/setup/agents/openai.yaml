@@ -1,0 +1,3 @@
+interface:
+  display_name: "豆包桥接首次设置"
+  short_description: "安装后准备稳定运行目录、引导加载 Chrome 扩展并检查豆包连接"
