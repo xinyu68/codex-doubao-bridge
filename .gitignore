@@ -15,6 +15,7 @@ node_modules/
 *.mp4
 *.webm
 *.png
+!/assets/doubao-avatar.png
 *.jpg
 *.jpeg
 *.mp3
