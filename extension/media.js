@@ -270,7 +270,7 @@
     const prompt = "请根据已上传的图片实际生成视频，保持参考人物的外观、服装与画风；场景和出场人物按下方脚本安排。" +
       "时长" + message.duration + "秒，比例" + message.ratio + "。" +
       (message.imageRole === "first_frame" ? "从上传的首帧开始接续动作。" : "以上传图片作为视觉参考。") +
-      "仅使用当日免费次数，免费次数不足或需要付费时停止。无字幕、对白或背景音乐。\n" + message.prompt;
+      "无字幕、对白或背景音乐。\n" + message.prompt;
     chat.enterPrompt(input, prompt);
     await chat.sendPrompt(input);
     const deadline = Date.now() + 15000;

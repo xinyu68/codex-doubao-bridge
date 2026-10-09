@@ -504,3 +504,17 @@ test("confirmation text preserves an existing draft and never submits automatica
   assert.equal(result.sent, false);
   assert.equal(sends(), 0);
 });
+
+test("video submissions use existing account benefits without injecting a free-only restriction", async () => {
+  for (const script of ["翻开账本", "使用当前已开通的会员权益生成视频", "这次只用免费额度，翻开账本"]) {
+    const { context, images, sends } = await uploadPage();
+    await context.DoubaoMedia.handle({ type: "uploadImages", images });
+    const result = await context.DoubaoMedia.handle({ type: "videoSubmit", duration: 10, ratio: "9:16", prompt: script });
+    const sent = context.document.body.textContent;
+    assert.equal(result.state, "submitted");
+    assert.equal(sends(), 1);
+    assert.equal(sent, result.context.prompt);
+    assert.equal(sent.endsWith(script), true);
+    assert.doesNotMatch(sent.slice(0, -script.length), /免费|付费|会员|额度/u);
+  }
+});

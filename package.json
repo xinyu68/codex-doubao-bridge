@@ -3,6 +3,10 @@
     "private":  true,
     "version":  "0.3.1",
     "type":  "module",
+    "author": {
+        "name": "xinyu68",
+        "email": "1693784423@qq.com"
+    },
     "scripts":  {
                     "start":  "node service.mjs start",
                     "status": "node service.mjs status",
