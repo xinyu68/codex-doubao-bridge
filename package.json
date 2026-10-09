@@ -1,0 +1,16 @@
+{
+    "name":  "codex-doubao-bridge",
+    "private":  true,
+    "version":  "0.3.1",
+    "type":  "module",
+    "scripts":  {
+                    "start":  "node service.mjs start",
+                    "status": "node service.mjs status",
+                    "doctor": "node service.mjs doctor",
+                    "serve": "node service.mjs run",
+                    "chat":  "node cli.mjs",
+                    "mcp":  "node mcp-server.mjs",
+                    "test":  "node --test test/*.test.mjs",
+                    "media":  "node media-cli.mjs"
+                }
+}

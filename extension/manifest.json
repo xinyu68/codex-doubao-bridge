@@ -1,0 +1,42 @@
+{
+    "manifest_version":  3,
+    "name":  "Local Doubao Bridge",
+    "version":  "0.3.1",
+    "description":  "Local-only terminal bridge for an already logged-in Doubao tab.",
+    "permissions":  [
+                        "tabs",
+                        "scripting",
+                        "alarms",
+                        "storage",
+                        "downloads"
+                    ],
+    "host_permissions":  [
+                             "https://www.doubao.com/*",
+                             "https://doubao.com/*",
+                             "ws://127.0.0.1/*",
+                             "http://127.0.0.1/*"
+                         ],
+    "background":  {
+                       "service_worker":  "background.js",
+                       "type":  "module"
+                   },
+    "content_scripts":  [
+                            {
+                                "matches":  [
+                                                "https://www.doubao.com/*",
+                                                "https://doubao.com/*"
+                                            ],
+                                "js":  [
+                                           "version.js",
+                                           "media-core.js",
+                                           "media.js",
+                                           "content.js"
+                                       ],
+                                "run_at":  "document_idle"
+                            }
+                        ],
+    "action":  {
+                   "default_popup":  "popup.html",
+                   "default_title":  "豆包桥接：连接与版本诊断"
+               }
+}
