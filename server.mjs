@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { encodeFrame, FrameDecoder } from "./websocket.mjs";
 import { createMediaRoutes } from "./media-routes.mjs";
+import { createManagedLifecycle } from "./managed-lifecycle.mjs";
 
 const port = Number(process.env.PORT || 8765);
 const key = process.env.DOUBAO_BRIDGE_KEY;
@@ -20,6 +21,15 @@ const expectedVersion = JSON.parse(fs.readFileSync(path.join(root, "extension", 
 const peers = new ExtensionPeers();
 const pending = new Map();
 let commandQueue = Promise.resolve();
+const sockets = new Set();
+const managed = process.env.DOUBAO_BRIDGE_MANAGED === "1";
+const idleMs = Number(process.env.DOUBAO_BRIDGE_IDLE_MS || 30000);
+if (!Number.isFinite(idleMs) || idleMs < 100) throw new Error("Invalid managed idle timeout.");
+const lifecycle = createManagedLifecycle({ managed, idleMs, stop: () => {
+  lifecycle.dispose();
+  server.close(() => process.exit(0));
+  for (const socket of sockets) socket.destroy();
+} });
 
 function hasLiveExtension() {
   return Boolean(peers.selected());
@@ -85,12 +95,12 @@ function handleWebSocketMessage(body, socket) {
 const mediaRoutes = createMediaRoutes({
   root,
   key,
-  connection: () => peers.state(expectedVersion, path.join(root, "extension")),
+  connection: () => ({ ...peers.state(expectedVersion, path.join(root, "extension")), lifecycle: lifecycle.state() }),
   enqueue: enqueueCommand,
   command: runExtensionData
 });
 
-const server = http.createServer(async (request, response) => {
+async function handleRequest(request, response) {
   if (await mediaRoutes(request, response)) return;
   if (request.method === "POST" && request.url === "/v1/new-chat") {
     if (request.headers.authorization !== `Bearer ${key}`) {
@@ -169,6 +179,34 @@ const server = http.createServer(async (request, response) => {
     response.writeHead(502, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify({ ok: false, error: error.message }));
   }
+}
+
+const server = http.createServer(async (request, response) => {
+  if (request.url === "/v1/client" || request.url === "/v1/shutdown") {
+    if (request.headers.authorization !== `Bearer ${key}`) {
+      response.writeHead(401).end(JSON.stringify({ ok: false, error: "Unauthorized" }) + "\n");
+    } else if (request.url === "/v1/client" && request.method === "GET" && !lifecycle.state().stopping) {
+      lifecycle.attach(response);
+    } else if (request.url === "/v1/shutdown" && request.method === "POST" && lifecycle.stopIfIdle()) {
+      response.writeHead(200).end(JSON.stringify({ ok: true }));
+    } else response.writeHead(409).end(JSON.stringify({ ok: false, error: "The bridge has active clients or operations, or is not managed." }) + "\n");
+    return;
+  }
+  if (lifecycle.state().stopping && request.url !== "/v1/health") {
+    response.writeHead(503).end(JSON.stringify({ ok: false, error: "The bridge is closing. Check status before retrying; do not repeat an uncertain submission." }));
+    return;
+  }
+  const finish = request.url === "/v1/health" ? () => {} : lifecycle.begin();
+  try { await handleRequest(request, response); }
+  catch (error) {
+    if (!response.destroyed && !response.headersSent) response.writeHead(502).end(JSON.stringify({ ok: false, error: error.message }));
+    else response.destroy();
+  } finally { finish(); }
+});
+
+server.on("connection", (socket) => {
+  sockets.add(socket);
+  socket.on("close", () => sockets.delete(socket));
 });
 
 server.on("upgrade", (request, socket) => {

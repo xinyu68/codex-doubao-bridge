@@ -3,19 +3,20 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { readConfiguration, bridgeState, startBridge } from "../service.mjs";
+import { readConfiguration, bridgeState, stopIdleManagedBridge } from "../service.mjs";
 import { ensureConfiguration } from "./setup.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const runtimeFiles = [
   "server.mjs", "service.mjs", "websocket.mjs", "extension-peers.mjs", "delegate.mjs",
+  "managed-client.mjs", "managed-lifecycle.mjs",
   "mcp-server.mjs", "cli.mjs", "media-api.mjs", "media-cli.mjs", "media-routes.mjs", "media-files.mjs",
   "start-bridge.ps1", "run-bridge.ps1", "package.json",
   "extension/manifest.json", "extension/version.js", "extension/build.json", "extension/config.example.js",
   "extension/background.js", "extension/content.js", "extension/media.js", "extension/media-core.js",
   "extension/popup.html", "extension/popup.css", "extension/popup.js"
 ];
-const backendFiles = new Set(["server.mjs", "websocket.mjs", "extension-peers.mjs", "delegate.mjs", "media-routes.mjs", "media-files.mjs", "extension/manifest.json"]);
+const backendFiles = new Set(["server.mjs", "websocket.mjs", "extension-peers.mjs", "delegate.mjs", "media-routes.mjs", "media-files.mjs", "managed-lifecycle.mjs", "extension/manifest.json"]);
 const samePath = (a, b) => process.platform === "win32"
   ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
   : path.resolve(a) === path.resolve(b);
@@ -45,8 +46,13 @@ async function readBinding(home) {
   }
 }
 
-export async function resolveRuntime({ home = pluginHome() } = {}) {
-  return (await readBinding(home))?.bridgeRoot || path.join(home, "runtime");
+export async function resolveRuntime({ home = pluginHome(), sourceRoot = packageRoot, requireCurrentVersion = false } = {}) {
+  const binding = await readBinding(home);
+  if (binding && requireCurrentVersion) {
+    const version = JSON.parse(await fs.readFile(path.join(sourceRoot, "plugin.json"), "utf8")).version;
+    if (binding.pluginVersion !== version) throw new Error("Run the plugin setup Skill to update the runtime before using Doubao tools.");
+  }
+  return binding?.bridgeRoot || path.join(home, "runtime");
 }
 
 async function legacyInstallation(env) {
@@ -68,6 +74,8 @@ export async function setupPlugin({ home = pluginHome(), sourceRoot = packageRoo
   await fs.mkdir(home, { recursive: true });
   const lockPath = path.join(home, "setup.lock");
   let lock;
+  let updateLock;
+  let updateLockPath;
   try { lock = await fs.open(lockPath, "wx"); }
   catch (error) { if (error.code === "EEXIST") throw new Error("Another setup is active. Inspect setup.lock if an earlier setup crashed."); throw error; }
   try {
@@ -89,8 +97,16 @@ export async function setupPlugin({ home = pluginHome(), sourceRoot = packageRoo
     try { await fs.access(path.join(target, "extension", "config.js")); configuration = await readConfiguration(target); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
     if (configuration && changed.some(({ file }) => backendFiles.has(file))) {
-      const state = await checkState(configuration);
-      if (state.running) throw new Error("The bridge backend changed but the existing service is running. Stop that installation's service, then run setup again; no files or credentials were changed.");
+      // Use the starter's lock so a new MCP cannot start partially updated backend files.
+      updateLockPath = path.join(target, ".runtime", "start.lock");
+      await fs.mkdir(path.dirname(updateLockPath), { recursive: true });
+      try { updateLock = await fs.open(updateLockPath, "wx"); }
+      catch (error) {
+        if (error.code === "EEXIST") throw new Error("Another MCP is preparing this connection. Run setup again after it completes; no files or credentials were changed.");
+        throw error;
+      }
+      await updateLock.writeFile(JSON.stringify({ pid: process.pid }));
+      await stopIdleManagedBridge(configuration, { checkState });
     }
     for (const { file, bytes } of changed) {
       const destination = path.join(target, file);
@@ -106,7 +122,10 @@ export async function setupPlugin({ home = pluginHome(), sourceRoot = packageRoo
     return { configured: true, ...binding, extensionDirectory: path.join(target, "extension"), generatedKey,
       updatedFiles: changed.map(({ file }) => file), reusedExisting: !samePath(target, path.join(home, "runtime")),
       serviceStarted: false };
-  } finally { await lock.close(); await fs.unlink(lockPath); }
+  } finally {
+    if (updateLock) { await updateLock.close(); await fs.unlink(updateLockPath); }
+    await lock.close(); await fs.unlink(lockPath);
+  }
 }
 
 export async function pluginStatus({ home = pluginHome(), sourceRoot = packageRoot, checkState = bridgeState } = {}) {
@@ -127,10 +146,7 @@ if (process.argv[1] && samePath(process.argv[1], fileURLToPath(import.meta.url))
       if (index >= 0 && !process.argv[index + 1]) throw new Error("--bridge-root requires a directory.");
       result = await setupPlugin({ ...(index >= 0 ? { bridgeRoot: process.argv[index + 1] } : {}) });
     } else if (operation === "status") result = await pluginStatus();
-    else if (operation === "start") {
-      if (!await readBinding(pluginHome())) throw new Error("Run plugin setup first.");
-      result = await startBridge(await readConfiguration(await resolveRuntime()));
-    } else throw new Error("Usage: node scripts/plugin-runtime.mjs setup [--bridge-root <existing-directory>]|status|start");
+    else throw new Error("Usage: node scripts/plugin-runtime.mjs setup [--bridge-root <existing-directory>]|status");
     console.log(JSON.stringify(result, null, 2));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

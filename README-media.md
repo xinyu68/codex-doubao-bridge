@@ -17,7 +17,7 @@ node .\media-cli.mjs --request .\requests\tabs.json
 node .\media-cli.mjs --request .\requests\session.json
 ~~~
 
-这些 request 文件由调用方创建；例如 tabs.json 内容为 `{"operation":"tabs"}`，session.json 内容为 `{"operation":"session"}`。CLI读取request.json；客户端内部使用已有认证配置，不把密钥放在命令或输出中。
+这些 request 文件由调用方创建；例如 tabs.json 内容为 `{"operation":"tabs"}`，session.json 内容为 `{"operation":"session"}`。CLI读取request.json；客户端内部使用已有认证配置，不把密钥放在命令或输出中。MCP 和媒体 CLI 会自动准备共享连接，无需先启动服务；最后一个客户端退出且本机操作完成30秒后自动退出。再次连接可查询保存的原任务，不重新提交视频。
 
 | operation | MCP工具 | 作用 |
 | --- | --- | --- |

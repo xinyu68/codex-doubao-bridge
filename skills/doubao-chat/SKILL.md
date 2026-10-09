@@ -6,7 +6,7 @@ description: "通过已登录豆包网页进行问答、独立文本委派，以
 # 豆包网页桥接
 
 先确定安装方式：本技能目录有 bridge-local.json 时读取其中的 bridgeRoot 和 mcpServer，这是旧版独立安装；没有该文件时，从本 SKILL.md 的真实绝对路径取两级父目录作为 pluginRoot，确认存在 plugin.json 和 scripts/plugin-runtime.mjs，执行 `node <pluginRoot>/scripts/plugin-runtime.mjs status` 取得 bridgeRoot（返回字段 root）。configured=false 时运行插件中的 doubao-setup Skill；needsSetup=true 时重新执行 setup，保留稳定运行目录。不把发布仓库示例路径或插件缓存当作运行目录。只有单独复制的 Skill、没有完整插件时，按仓库 README 运行 scripts/install.ps1。
-MCP 基础名称：doubao_local；插件会添加命名空间，按当前工具列表选择对应的 doubao_* 工具，不重复注册 standalone MCP。首次实际调用前按下方“连接与按需启动”检查服务。网页使用用户已有登录状态，不读取或输出 extension/config.js 密钥，不通过 Chrome 调试协议绕过扩展。
+MCP 基础名称：doubao_local；插件会添加命名空间，按当前工具列表选择对应的 doubao_* 工具，不重复注册 standalone MCP。首次实际调用前按下方“自动连接与诊断”检查连接。网页使用用户已有登录状态，不读取或输出 extension/config.js 密钥，不通过 Chrome 调试协议绕过扩展。
 
 ## 文字任务
 
@@ -30,17 +30,17 @@ MCP 基础名称：doubao_local；插件会添加命名空间，按当前工具�
 - 只执行用户要求的生成范围，使用当前账号现有权益；不默认要求只用免费额度，也不要求用户先声明免费或付费账号。用户主动设置次数或预算上限时遵守。调研/检查/上传不自动触发生成；超时后不默认追加一次生成
 - 若新 MCP 工具尚未刷新，使用同一目录的 media-cli.mjs --request <JSON文件>，客户端内部使用已有桥接配置，不手工读取密钥
 
-## 连接与按需启动
+## 自动连接与诊断
 
-不依赖 Windows 计划任务，也不创建开机自启。安装目录来自独立安装的 bridge-local.json 或插件 status 返回的 root；服务辅助脚本内部读取配置，不输出密钥。插件也可执行 `node <pluginRoot>/scripts/plugin-runtime.mjs start` 按需启动。
+MCP 自动启动或复用共享连接，多个 Codex 对话使用同一进程。不要要求用户启动桥接服务或运行 start 脚本，不创建计划任务或开机自启。配置目录来自独立安装的 bridge-local.json 或插件 status 返回的 root；状态命令只读诊断，running=false 在没有 MCP 客户端时是正常状态。
 
-1. 每次开始实际豆包操作前，在 bridgeRoot 下执行 `node service.mjs status`；只有 `running=false` 时执行 `node service.mjs start`，或用 PowerShell 运行该目录的 start-bridge.ps1。start 会复用当前服务，在后台隐藏启动，返回状态；仅评估且不需要网页检查时不必启动
-2. 401、密钥不匹配、其他安装占用端口或连接超时不等于服务未启动；先报告诊断，不重复启动、不自动改密钥、不调用计划任务
-3. 服务运行但 `connected=false` 时，最多等待40秒供 Chrome 扩展心跳重连；仍未恢复时核对扩展启用状态和已登录的豆包页。`node service.mjs doctor` 还可检查 FFmpeg/ffprobe，文字问答不需要它们
+1. 每次开始实际豆包操作前调用 doubao_status，连接由 MCP 自动准备。仅评估且不需要网页检查时无需调用。当前工具尚未刷新时可用同一运行目录的 media-cli.mjs 执行只读媒体操作，其 MCP 客户端也会自动连接
+2. 401、密钥不匹配、其他安装占用端口或连接超时先报告诊断，不自动改密钥、不手工启动第二份服务。若提示旧版服务尚在运行，核对该安装的进程路径，只处理它并重新执行 setup
+3. `connected=false` 时，最多等待40秒供 Chrome 扩展心跳重连；仍未恢复时核对扩展启用状态和已登录的豆包页。`node service.mjs doctor` 还可检查 FFmpeg/ffprobe，文字问答不需要它们
 4. mediaV1 未连接或版本不一致时，在 chrome://extensions 重新加载 Local Doubao Bridge，再刷新豆包页面。后台标签页隐藏编辑器时，请用户将固定任务页置于前台，不通过私有接口或调试协议绕过
 5. 对已授权且确定没有提交的问题最多重试一次。生成结果不明时保留 jobId/idempotencyKey，查原任务；不能自动新建另一生成请求
 
-服务按需启动后保持运行，便于查询长视频任务与下载；不自动注册登录任务、关闭用户 Chrome 或停止其他 Node 服务。启动检查不会发送豆包消息或消耗生成额度。
+MCP 退出或崩溃会释放自己的连接；最后一个客户端离开且本机操作完成30秒后共享进程自动退出。已提交的豆包云端生成继续运行，jobId/idempotencyKey 保存在运行目录，固定标签页绑定保存在扩展中。重新连接后查询原任务，不重新提交。连接检查不会发送豆包消息或消耗生成额度；不关闭用户 Chrome 或其他 Node 服务。
 
 ## 视频制作与复用
 

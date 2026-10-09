@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "codex-doubao-bridge",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "使用已登录的豆包网页进行问答、参考图视频生成、下载和续接。",
   "author": { "name": "xinyu68", "email": "1693784423@qq.com" },
   "homepage": "https://github.com/xinyu68/codex-doubao-bridge",
@@ -14,7 +14,7 @@
       "interface": {
         "displayName": "豆包网页桥接与视频",
         "shortDescription": "用已有豆包账号问答、上传参考图、生成及下载视频",
-        "longDescription": "包含本机 MCP、Chrome 扩展和视频工作流，服务按需启动。首次设置后手动加载扩展并登录豆包。",
+        "longDescription": "包含本机 MCP、Chrome 扩展和视频工作流，MCP 自动管理共享连接，无需单独启动服务。首次设置后加载扩展并登录豆包。",
         "developerName": "xinyu68",
         "category": "Productivity",
         "capabilities": ["Read", "Write"],

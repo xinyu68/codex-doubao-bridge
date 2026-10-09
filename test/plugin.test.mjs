@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { runtimeFiles, setupPlugin, pluginStatus, resolveRuntime } from "../scripts/plugin-runtime.mjs";
 import { readConfiguration } from "../service.mjs";
 
@@ -42,7 +42,7 @@ test("plugin setup separates cache from user data and preserves keys and jobs ac
   const nextRoot = path.join(options.directory, "cache v2");
   await fs.cp(options.sourceRoot, nextRoot, { recursive: true });
   const manifest = JSON.parse(await fs.readFile(path.join(nextRoot, "plugin.json"), "utf8"));
-  manifest.version = "0.4.1";
+  manifest.version = "0.5.1";
   await fs.writeFile(path.join(nextRoot, "plugin.json"), JSON.stringify(manifest));
   assert.equal((await pluginStatus({ ...options, sourceRoot: nextRoot })).needsSetup, true);
   const second = await setupPlugin({ ...options, sourceRoot: nextRoot });
@@ -86,12 +86,15 @@ test("running backend update and cache-contained runtime are refused before chan
   await assert.rejects(setupPlugin({ ...options, home: path.join(options.directory, "other-home"), bridgeRoot: path.join(options.sourceRoot, "runtime") }), /outside the plugin/);
 });
 
-test("MCP starts before setup and resolves a later adoption without restarting or starting the bridge", async (t) => {
+test("MCP discovers tools before setup and automatically connects after later setup without a restart", async (t) => {
   const options = await fixture(t);
-  const mock = path.join(options.directory, "mock-fetch.mjs");
-  await fs.writeFile(mock, 'globalThis.fetch = async (_url, request) => ({ok:true,json:async()=>({ok:true,connected:false,authorized:request.headers.authorization === "Bearer isolated-test-key"})});\n');
-  const child = spawn(process.execPath, ["--import", pathToFileURL(mock).href, path.join(root, "scripts", "plugin-mcp.mjs")], {
-    env: { ...options.env, DOUBAO_BRIDGE_KEY: "" }, windowsHide: true, stdio: ["pipe", "pipe", "pipe"]
+  const { default: http } = await import("node:http");
+  const reserve = http.createServer();
+  await new Promise((resolve) => reserve.listen(0, "127.0.0.1", resolve));
+  const port = reserve.address().port;
+  await new Promise((resolve) => reserve.close(resolve));
+  const child = spawn(process.execPath, [path.join(root, "scripts", "plugin-mcp.mjs")], {
+    env: { ...options.env, DOUBAO_BRIDGE_KEY: "", DOUBAO_BRIDGE_PORT: String(port), DOUBAO_BRIDGE_IDLE_MS: "600" }, windowsHide: true, stdio: ["pipe", "pipe", "pipe"]
   });
   t.after(async () => {
     if (child.exitCode === null) {
@@ -117,17 +120,28 @@ test("MCP starts before setup and resolves a later adoption without restarting o
     pending.set(requestId, (message) => { clearTimeout(timeout); pending.delete(requestId); resolve(message); });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }) + "\n");
   });
-  assert.equal((await call("initialize", { protocolVersion: "2024-11-05" })).result.serverInfo.version, "0.4.0");
+  assert.equal((await call("initialize", { protocolVersion: "2024-11-05" })).result.serverInfo.version, "0.5.0");
   const listed = await call("tools/list");
   assert.ok(listed.result.tools.some((tool) => tool.name === "doubao_video_submit"));
   assert.equal((await call("tools/call", { name: "doubao_status" })).result.isError, true);
   const bridgeRoot = path.join(options.directory, "adopted after initialization");
-  await fs.mkdir(path.join(bridgeRoot, "extension"), { recursive: true });
-  await fs.writeFile(path.join(bridgeRoot, "extension", "config.js"), 'export const bridgeKey = "isolated-test-key";\n');
-  await fs.mkdir(options.home, { recursive: true });
-  await fs.writeFile(path.join(options.home, "binding.json"), JSON.stringify({ bridgeRoot }));
-  const response = await call("tools/call", { name: "doubao_status" });
-  assert.equal(response.result.structuredContent.authorized, true);
   await assert.rejects(fs.access(path.join(options.home, "runtime")), { code: "ENOENT" });
-  await assert.rejects(fs.access(path.join(bridgeRoot, ".runtime", "server.json")), { code: "ENOENT" });
+  await setupPlugin({ ...options, bridgeRoot });
+  const response = await call("tools/call", { name: "doubao_status" });
+  assert.equal(response.result.structuredContent.connected, false);
+  assert.equal(response.result.structuredContent.lifecycle.clients, 1);
+  assert.equal(response.result.structuredContent.lifecycle.managed, true);
+  const { bridgeState } = await import("../service.mjs");
+  const config = { ...await readConfiguration(bridgeRoot), port };
+  t.after(async () => {
+    // Only the authenticated idle worker belonging to this isolated installation can exit.
+    if ((await bridgeState(config)).running) await fetch(`http://127.0.0.1:${port}/v1/shutdown`, {
+      method: "POST", headers: { authorization: "Bearer " + config.key }
+    });
+  });
+  await assert.rejects(fs.access(path.join(options.home, "runtime")), { code: "ENOENT" });
+  await new Promise((resolve) => { child.once("exit", resolve); child.stdin.end(); });
+  const deadline = Date.now() + 5000;
+  while ((await bridgeState(config)).running && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal((await bridgeState(config)).running, false);
 });

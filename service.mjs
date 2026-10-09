@@ -24,7 +24,17 @@ export async function readConfiguration(root = projectRoot) {
 }
 
 // Only a refused loopback connection means stopped; authentication errors and timeouts never trigger a second server.
-export function bridgeState({ root, key, port = 8765 }) {
+export async function bridgeState(config) {
+  try { return await queryBridgeState(config); }
+  catch (error) {
+    if (error.code !== "ECONNRESET" && error.code !== "EPIPE") throw error;
+    // An idle managed worker may close a keep-alive socket during this read-only probe.
+    await delay(50);
+    return queryBridgeState(config);
+  }
+}
+
+function queryBridgeState({ root, key, port = 8765 }) {
   return new Promise((resolve, reject) => {
     const request = http.get({ hostname: "127.0.0.1", port, path: "/v1/health", headers: { authorization: "Bearer " + key } }, (response) => {
       let raw = "";
@@ -44,7 +54,7 @@ export function bridgeState({ root, key, port = 8765 }) {
         resolve({ running: true, connected: data.connected === true, root, port,
           expectedVersion: data.expectedVersion, extensionVersion: data.extensionVersion,
           workerVersion: data.workerVersion, versionMismatch: data.versionMismatch,
-          capabilities: data.capabilities || [] });
+          capabilities: data.capabilities || [], lifecycle: data.lifecycle });
       });
     });
     request.setTimeout(2000, () => request.destroy(new Error("Bridge health check timed out; inspect the port before restarting.")));
@@ -55,13 +65,18 @@ export function bridgeState({ root, key, port = 8765 }) {
   });
 }
 
-export async function startBridge(config, { stateDir = path.join(config.root, ".runtime"), waitMs = 10000 } = {}) {
-  const existing = await bridgeState(config);
+export async function startBridge(config, { stateDir = path.join(config.root, ".runtime"), waitMs = 10000, managed = false, idleMs = 30000 } = {}) {
+  const deadline = Date.now() + waitMs;
+  let existing = await bridgeState(config);
+  while (existing.running && existing.lifecycle?.stopping && Date.now() < deadline) {
+    await delay(100);
+    existing = await bridgeState(config);
+  }
+  if (existing.lifecycle?.stopping) throw new Error("The managed bridge is still closing; check status again before using tools.");
   if (existing.running) return { ...existing, started: false };
   await fs.mkdir(stateDir, { recursive: true });
   const lockPath = path.join(stateDir, "start.lock");
   let lock;
-  const deadline = Date.now() + waitMs;
   while (!lock && Date.now() < deadline) {
     try {
       lock = await fs.open(lockPath, "wx");
@@ -88,7 +103,8 @@ export async function startBridge(config, { stateDir = path.join(config.root, ".
     let child;
     try {
       child = spawn(process.execPath, [path.join(config.root, "server.mjs")], {
-        cwd: config.root, env: { ...process.env, DOUBAO_BRIDGE_KEY: config.key, PORT: String(config.port) },
+        cwd: config.root, env: { ...process.env, DOUBAO_BRIDGE_KEY: config.key, PORT: String(config.port),
+          DOUBAO_BRIDGE_MANAGED: managed ? "1" : "0", DOUBAO_BRIDGE_IDLE_MS: String(idleMs) },
         detached: true, windowsHide: true, stdio: ["ignore", stdout.fd, stderr.fd]
       });
       await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
@@ -96,7 +112,7 @@ export async function startBridge(config, { stateDir = path.join(config.root, ".
     } finally { await stdout.close(); await stderr.close(); }
     let childExit;
     child.once("exit", (code) => { childExit = code; });
-    await fs.writeFile(path.join(stateDir, "server.json"), JSON.stringify({ pid: child.pid, root: config.root, startedAt: new Date().toISOString() }, null, 2));
+    await fs.writeFile(path.join(stateDir, "server.json"), JSON.stringify({ pid: child.pid, root: config.root, managed, startedAt: new Date().toISOString() }, null, 2));
     while (Date.now() < deadline) {
       if (childExit !== undefined) throw new Error("Bridge server exited during startup. See .runtime/server-error.log.");
       const current = await bridgeState(config);
@@ -116,6 +132,25 @@ async function doctor(config) {
   });
   const [ffmpeg, ffprobe] = await Promise.all([executable(process.env.FFMPEG_PATH || "ffmpeg"), executable(process.env.FFPROBE_PATH || "ffprobe")]);
   return { ...state, nodeVersion: process.version, ffmpeg, ffprobe };
+}
+
+export async function stopIdleManagedBridge(config, { waitMs = 5000, checkState = bridgeState } = {}) {
+  const state = await checkState(config);
+  if (!state.running) return;
+  if (!state.lifecycle?.managed || state.lifecycle.clients || state.lifecycle.operations) {
+    throw new Error("The existing service is running. Close its Codex sessions and wait for the managed connection to exit; for an older manual service, stop only that installation, then run setup again. No files or credentials were changed.");
+  }
+  const response = await fetch(`http://127.0.0.1:${config.port}/v1/shutdown`, {
+    method: "POST", headers: { authorization: "Bearer " + config.key }, signal: AbortSignal.timeout(2000)
+  });
+  if (!response.ok || !(await response.json()).ok) {
+    throw new Error("The existing service is running with active clients or operations. Close its Codex sessions, then run setup again; no files or credentials were changed.");
+  }
+  const deadline = Date.now() + waitMs;
+  while ((await checkState(config)).running) {
+    if (Date.now() >= deadline) throw new Error("The managed bridge is still closing. Run setup again after it exits; no files or credentials were changed.");
+    await delay(100);
+  }
 }
 
 if (process.argv[1] && samePath(process.argv[1], fileURLToPath(import.meta.url))) {

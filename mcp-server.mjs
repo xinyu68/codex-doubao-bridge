@@ -2,11 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mediaTools, mediaRoutesByTool } from "./media-api.mjs";
+import { ManagedBridgeClient } from "./managed-client.mjs";
 
 const root = process.env.DOUBAO_BRIDGE_ROOT
   ? path.resolve(process.env.DOUBAO_BRIDGE_ROOT)
   : path.dirname(fileURLToPath(import.meta.url));
 let resolveBridgeRoot = async () => root;
+let client;
+let closing = false;
+let activeCalls = 0;
 
 export function setBridgeRootResolver(resolver) {
   resolveBridgeRoot = resolver;
@@ -26,10 +30,13 @@ function bridgeKey(bridgeRoot) {
 
 async function bridge(pathname, method = "GET", body) {
   const bridgeRoot = await resolveBridgeRoot();
-  const response = await fetch(`http://127.0.0.1:8765${pathname}`, {
+  const key = bridgeKey(bridgeRoot);
+  const port = Number(process.env.DOUBAO_BRIDGE_PORT || 8765);
+  await connect(bridgeRoot, key, port);
+  const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
     method,
     headers: {
-      authorization: `Bearer ${bridgeKey(bridgeRoot)}`,
+      authorization: `Bearer ${key}`,
       ...(body ? { "content-type": "application/json" } : {})
     },
     ...(body ? { body: JSON.stringify(body) } : {})
@@ -38,6 +45,26 @@ async function bridge(pathname, method = "GET", body) {
   if (!response.ok || payload.ok === false) throw new Error(payload.error || "Doubao bridge request failed");
   return payload;
 }
+
+async function connect(bridgeRoot, key, port = Number(process.env.DOUBAO_BRIDGE_PORT || 8765)) {
+  if (closing) throw new Error("The MCP connection is closing.");
+  if (!client || client.config.root !== bridgeRoot || client.config.key !== key || client.config.port !== port) {
+    client?.close();
+    client = new ManagedBridgeClient({ root: bridgeRoot, key, port }, { idleMs: Number(process.env.DOUBAO_BRIDGE_IDLE_MS || 30000) });
+  }
+  await client.ensure();
+}
+
+function release() {
+  closing = true;
+  client?.close();
+  if (!activeCalls) process.exit(0);
+}
+process.stdin.on("end", release);
+process.stdin.on("error", release);
+process.stdout.on("error", release);
+process.on("SIGINT", release);
+process.on("SIGTERM", release);
 
 function cleanReply(text, prompt) {
   const normalize = (value) => value
@@ -71,7 +98,7 @@ const tools = [
   },
   {
     name: "doubao_status",
-    description: "Check whether the local Doubao Chrome bridge is connected. Does not send a message.",
+    description: "Automatically prepare the shared local connection and check whether the Doubao Chrome extension is connected. Does not send a message or generate media.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
@@ -130,13 +157,18 @@ process.stdin.on("data", async (chunk) => {
       request = JSON.parse(line);
       if (request.method === "notifications/initialized") continue;
       if (request.method === "initialize") {
+        // Discovery remains usable before onboarding; every later tool call rechecks the binding.
+        try {
+          const bridgeRoot = await resolveBridgeRoot();
+          await connect(bridgeRoot, bridgeKey(bridgeRoot));
+        } catch (error) { console.error(error.message); }
         send({
           jsonrpc: "2.0",
           id: request.id,
           result: {
             protocolVersion: request.params?.protocolVersion || "2024-11-05",
             capabilities: { tools: {} },
-            serverInfo: { name: "doubao-local", version: "0.4.0" }
+            serverInfo: { name: "doubao-local", version: "0.5.0" }
           }
         });
         continue;
@@ -146,6 +178,7 @@ process.stdin.on("data", async (chunk) => {
         continue;
       }
       if (request.method === "tools/call") {
+        activeCalls++;
         try {
           const result = await callTool(request.params.name, request.params.arguments || {});
           const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
@@ -155,7 +188,7 @@ process.stdin.on("data", async (chunk) => {
           } });
         } catch (error) {
           send({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: error.message }], isError: true } });
-        }
+        } finally { activeCalls--; if (closing && !activeCalls) process.exit(0); }
         continue;
       }
       send({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Method not found" } });

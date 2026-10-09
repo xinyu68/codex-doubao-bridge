@@ -39,4 +39,4 @@ if (-not $SkipMcpRegister) {
     Write-Output 'MCP registered. Reopen the Codex task to refresh tools and Skill discovery.'
 }
 Write-Output "Load the unpacked Chrome extension from: $(Join-Path $bridgeRoot 'extension')"
-Write-Output 'Open Doubao and sign in. The service starts on demand; no scheduled task or login startup was created.'
+Write-Output 'Open Doubao and sign in. MCP manages the connection automatically; no separate service startup, scheduled task or login startup is required.'
