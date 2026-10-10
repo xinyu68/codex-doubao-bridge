@@ -1,10 +1,10 @@
 import { bridgeKey, bridgeUrl } from "./config.js";
 
-const workerVersion = "0.3.1";
+const workerVersion = "0.4.0";
 let socket;
 let activeCommands = 0;
 const commands = new Set([
-  "ask", "read", "newChat", "tabs", "sessionOpen", "inspect", "uiClick",
+  "ask", "read", "newChat", "tabs", "sessionOpen", "sessionFocus", "videoPrepare", "inspect", "uiClick",
   "diagnostics", "uploadImages", "videoSubmit", "videoStatus", "videoAdopt", "videoDownload", "downloadStatus"
 ]);
 const isDoubao = (url) => {
@@ -52,7 +52,7 @@ async function readyTab(tabId, contentRevision) {
     if (tab.status === "complete" && isDoubao(tab.url)) {
       try {
         const page = await messageDoubaoTab(tabId, { type: "inspect", contentRevision });
-        if (page.editors?.length) return tab;
+        if (page.editors?.length || page.url && page.visibility === "hidden") return tab;
       } catch (error) { lastError = error.message; }
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -84,11 +84,21 @@ async function downloadStatus(downloadId) {
   };
 }
 
+async function focusSession(message) {
+  const tab = await pinnedTab(message.sessionId);
+  await chrome.tabs.update(tab.id, { active: true });
+  if (message.focusWindow !== false) await chrome.windows.update(tab.windowId, { focused: true });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const current = await pinnedTab(message.sessionId);
+  return { sessionId: message.sessionId, tabId: current.id, active: current.active,
+    page: await messageDoubaoTab(current.id, { type: "inspect", detail: "summary", contentRevision: message.contentRevision }) };
+}
+
 async function runCommand(message) {
   if (message.type === "diagnostics") return diagnostics();
   if (message.type === "tabs") {
     const tabs = await chrome.tabs.query({ url: ["https://www.doubao.com/*", "https://doubao.com/*"] });
-    return { tabs: tabs.map((tab) => ({ tabId: tab.id, title: tab.title, url: tab.url, active: tab.active })) };
+    return { tabs: tabs.map((tab) => ({ tabId: tab.id, windowId: tab.windowId, title: tab.title, url: tab.url, active: tab.active })) };
   }
   if (message.type === "sessionOpen") {
     const tab = message.tabId === undefined
@@ -107,6 +117,8 @@ async function runCommand(message) {
     }
   }
   if (message.type === "downloadStatus") return downloadStatus(message.downloadId);
+  if (message.type === "sessionFocus") return focusSession(message);
+  if (message.type === "videoPrepare" && message.activateTab !== false) await focusSession(message);
   let tab;
   if (message.sessionId) tab = await pinnedTab(message.sessionId);
   else {
@@ -143,7 +155,7 @@ function connect() {
   const current = new WebSocket(bridgeUrl + "?key=" + encodeURIComponent(bridgeKey));
   socket = current;
   current.onopen = () => current.send(JSON.stringify({ type: "ready", version: chrome.runtime.getManifest().version,
-    workerVersion, extensionId: chrome.runtime.id, capabilities: ["mediaV1", "diagnosticsV1", "contentVersionV1"] }));
+    workerVersion, extensionId: chrome.runtime.id, capabilities: ["mediaV1", "mediaWorkflowV2", "diagnosticsV1", "contentVersionV1"] }));
   current.onmessage = async ({ data }) => {
     const message = JSON.parse(data);
     if (!commands.has(message.type)) return;

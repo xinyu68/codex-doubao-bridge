@@ -5,6 +5,7 @@ import { loadImages, probeVideo, extractTail } from "./media-files.mjs";
 
 const ROUTES = new Set([
   "/v1/diagnostics", "/v1/health", "/v1/tabs", "/v1/session", "/v1/page", "/v1/images", "/v1/ui/click",
+  "/v1/session/focus", "/v1/video/prepare", "/v1/video/jobs",
   "/v1/video/submit", "/v1/video/status", "/v1/video/download", "/v1/video/tail", "/v1/video/adopt"
 ]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -52,12 +53,15 @@ export function createMediaRoutes({ root, key, connection, enqueue, command }) {
     }
   }
   async function body(request) {
-    let raw = "";
+    const chunks = [];
+    let bytes = 0;
     for await (const chunk of request) {
-      raw += chunk;
-      if (Buffer.byteLength(raw) > 128 * 1024) throw new Error("Request JSON must not exceed 128 KiB; pass local image paths, not base64");
+      const buffer = Buffer.from(chunk);
+      bytes += buffer.length;
+      if (bytes > 128 * 1024) throw new Error("Request JSON must not exceed 128 KiB; pass local image paths, not base64");
+      chunks.push(buffer);
     }
-    const result = JSON.parse(raw || "{}");
+    const result = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
     if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Body must be a JSON object");
     return result;
   }
@@ -66,6 +70,11 @@ export function createMediaRoutes({ root, key, connection, enqueue, command }) {
     response.end(JSON.stringify(data));
   }
   async function videoStatus(job) {
+    if (job.localPath) return { jobId: job.id, state: "downloaded", path: job.localPath, video: job.video, media: job.lastStatus?.media, reused: true };
+    if (["preflight_failed", "quota_exhausted", "rejected", "failed"].includes(job.state)) {
+      return { jobId: job.id, ...job.lastStatus, ...job.submission, state: job.state, error: job.error || job.submission?.error,
+        retrySafe: job.state === "preflight_failed" && job.submission?.retrySafe === true };
+    }
     const result = await command("videoStatus", { sessionId: job.sessionId, job }, 20000);
     job.lastStatus = result;
     job.state = result.state;
@@ -98,6 +107,25 @@ export function createMediaRoutes({ root, key, connection, enqueue, command }) {
         if (state.connected && state.capabilities?.includes("diagnosticsV1")) {
           result.browser = await enqueue(() => command("diagnostics", {}, 15000));
         } else result.instruction = "Detailed diagnostics needs the updated Chrome extension; this call did not change any page.";
+      } else if (route === "/v1/video/jobs") {
+        if (payload.sessionId !== undefined) session(payload);
+        const limit = payload.limit ?? 25;
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("limit must be from 1 to 100");
+        await initialize();
+        const records = [...jobs.values()].filter((job) => !payload.sessionId || job.sessionId === payload.sessionId);
+        const states = {};
+        for (const job of records) states[job.state] = (states[job.state] || 0) + 1;
+        result = { total: records.length, states, quotaRemaining: null,
+          confirmedSubmissions: records.filter((job) => job.submission?.state === "submitted").length,
+          adopted: records.filter((job) => job.adopted).length,
+          downloaded: records.filter((job) => job.localPath).length,
+          jobs: records.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, limit).map((job) => ({
+            jobId: job.id, sessionId: job.sessionId, idempotencyKey: job.idempotencyKey, state: job.state, adopted: Boolean(job.adopted),
+            createdAt: job.createdAt, updatedAt: job.updatedAt, attempts: job.attempts || 1, path: job.localPath,
+            requested: job.spec ? { duration: job.spec.duration, ratio: job.spec.ratio, model: job.spec.model || null } : null,
+            video: job.video, reason: job.lastStatus?.reason || job.submission?.error || job.error,
+            retrySafe: job.state === "preflight_failed" && job.submission?.retrySafe === true
+          })) };
       } else if (route === "/v1/video/tail") {
         const job = await getJob(payload.jobId);
         if (!job.localPath) throw new Error("Download and verify the video before extracting its tail frame");
@@ -105,6 +133,12 @@ export function createMediaRoutes({ root, key, connection, enqueue, command }) {
         result = await extractTail(job.localPath, output);
         job.tailPath = result.path;
         await save(job);
+      } else if (route === "/v1/video/status") {
+        const job = await getJob(payload.jobId);
+        result = await enqueue(() => {
+          if (!job.localPath && !["preflight_failed", "quota_exhausted", "rejected", "failed"].includes(job.state)) requireExtension();
+          return videoStatus(job);
+        });
       } else if (route === "/v1/video/submit") {
         session(payload);
         if (typeof payload.prompt !== "string" || !payload.prompt.trim()) throw new Error("prompt is required");
@@ -116,11 +150,16 @@ export function createMediaRoutes({ root, key, connection, enqueue, command }) {
         if (!Number.isInteger(duration) || duration < 2 || duration > 15) throw new Error("duration must be an integer from 2 to 15 seconds");
         if (!VIDEO_RATIOS.has(ratio)) throw new Error("Unsupported ratio");
         if (!["reference", "first_frame"].includes(payload.imageRole ?? "reference")) throw new Error("Invalid imageRole");
+        for (const field of ["requirePrepared", "retryPreflight", "silent", "noText"]) {
+          if (payload[field] !== undefined && typeof payload[field] !== "boolean") throw new Error(field + " must be boolean");
+        }
+        if (payload.model !== undefined && (typeof payload.model !== "string" || !payload.model.trim() || payload.model.length > 100)) throw new Error("Invalid model");
         const spec = {
           sessionId: payload.sessionId, prompt: payload.prompt.trim(), imagePaths: payload.imagePaths ?? [],
           duration, ratio, imageRole: payload.imageRole ?? "reference",
           inputSelector: payload.inputSelector ?? null, uploadTriggerSelector: payload.uploadTriggerSelector ?? null,
-          controls: payload.controls ?? null
+          controls: payload.controls ?? null, model: payload.model ?? null,
+          requirePrepared: payload.requirePrepared ?? false, silent: payload.silent ?? false, noText: payload.noText ?? false
         };
         const fingerprint = crypto.createHash("sha256").update(JSON.stringify(spec)).digest("hex");
         result = await enqueue(async () => {
@@ -128,19 +167,34 @@ export function createMediaRoutes({ root, key, connection, enqueue, command }) {
           await initialize();
           const existing = [...jobs.values()].find((job) => job.idempotencyKey === payload.idempotencyKey);
           if (existing) {
-            if (existing.fingerprint !== fingerprint) throw new Error("Idempotency key already belongs to different parameters; use a new key for a deliberate new attempt");
-            return { jobId: existing.id, state: existing.state, reused: true, localPath: existing.localPath };
+            const compatibleSpec = existing.spec && { ...existing.spec, model: existing.spec.model ?? null,
+              requirePrepared: existing.spec.requirePrepared ?? false, silent: existing.spec.silent ?? false, noText: existing.spec.noText ?? false };
+            const compatibleFingerprint = compatibleSpec && crypto.createHash("sha256").update(JSON.stringify(compatibleSpec)).digest("hex");
+            if (existing.fingerprint !== fingerprint && compatibleFingerprint !== fingerprint) throw new Error("Idempotency key already belongs to different parameters; use a new key for a deliberate new attempt");
+            if (!(payload.retryPreflight === true && existing.state === "preflight_failed" && existing.submission?.sendAttempted === false && existing.submission?.retrySafe === true)) {
+              return { jobId: existing.id, state: existing.state, reused: true, localPath: existing.localPath,
+                retrySafe: existing.state === "preflight_failed" && existing.submission?.retrySafe === true, error: existing.submission?.error };
+            }
           }
           requireExtension();
+          if (connection().versionMismatch || spec.requirePrepared && !connection().capabilities?.includes("mediaWorkflowV2")) {
+            throw new Error("Reload the updated Local Doubao Bridge before submitting; the connected extension cannot enforce these settings");
+          }
           const images = await loadImages(spec.imagePaths);
-          const job = {
+          const job = existing || {
             id: crypto.randomUUID(), idempotencyKey: payload.idempotencyKey, fingerprint,
             sessionId: spec.sessionId, spec, state: "submitting", createdAt: new Date().toISOString()
           };
+          job.state = "submitting";
+          delete job.error;
+          delete job.lastStatus;
+          delete job.submission;
+          job.attempts = (job.attempts || 0) + 1;
+          job.updatedAt = new Date().toISOString();
           await save(job);
           try {
             const submission = await command("videoSubmit", { ...spec, images, jobId: job.id }, 65000);
-            job.context = submission.context;
+            if (submission.context) job.context = submission.context;
             job.state = submission.state;
             job.submission = submission;
             await save(job);
@@ -161,7 +215,26 @@ export function createMediaRoutes({ root, key, connection, enqueue, command }) {
             if (payload.tabId !== undefined && (!Number.isInteger(payload.tabId) || payload.tabId < 0)) throw new Error("tabId must be an integer");
             return command("sessionOpen", { sessionId: crypto.randomUUID(), tabId: payload.tabId }, 30000);
           }
-          if (route === "/v1/page") return command("inspect", { sessionId: session(payload) }, 20000);
+          if (route === "/v1/session/focus" || route === "/v1/video/prepare") {
+            session(payload);
+            if (!connection().capabilities?.includes("mediaWorkflowV2")) throw new Error("Reload Local Doubao Bridge 0.4.0 to enable preparation and tab focus");
+            if (route === "/v1/session/focus") {
+              if (payload.focusWindow !== undefined && typeof payload.focusWindow !== "boolean") throw new Error("focusWindow must be boolean");
+              return command("sessionFocus", { sessionId: payload.sessionId, focusWindow: payload.focusWindow }, 25000);
+            }
+            const duration = payload.duration ?? 5;
+            const ratio = payload.ratio ?? "9:16";
+            if (!Number.isInteger(duration) || duration < 2 || duration > 15 || !VIDEO_RATIOS.has(ratio)) throw new Error("Invalid requested video settings");
+            if (payload.activateTab !== undefined && typeof payload.activateTab !== "boolean") throw new Error("activateTab must be boolean");
+            if (!["reference", "first_frame"].includes(payload.imageRole ?? "reference")) throw new Error("Invalid imageRole");
+            if (payload.model !== undefined && (typeof payload.model !== "string" || !payload.model.trim() || payload.model.length > 100)) throw new Error("Invalid model");
+            const images = await loadImages(payload.imagePaths || []);
+            return command("videoPrepare", { ...payload, duration, ratio, images }, 60000);
+          }
+          if (route === "/v1/page") {
+            if (payload.detail !== undefined && !["summary", "full"].includes(payload.detail)) throw new Error("detail must be summary or full");
+            return command("inspect", { sessionId: session(payload), detail: payload.detail ?? "summary" }, 20000);
+          }
           if (route === "/v1/ui/click") {
             if (typeof payload.selector !== "string" || !payload.selector.trim()) throw new Error("selector is required");
             if (payload.key !== undefined && !["ArrowLeft", "ArrowRight", "Home", "End"].includes(payload.key)) throw new Error("Only slider adjustment keys are allowed");

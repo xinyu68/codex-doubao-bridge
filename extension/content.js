@@ -1,5 +1,5 @@
 (() => {
-const contentVersion = globalThis.DoubaoBridgeVersion || "0.3.1";
+const contentVersion = globalThis.DoubaoBridgeVersion || "0.4.0";
 const contentRevision = globalThis.DoubaoBridgeRevision || "attachments-v2";
 const previousController = globalThis.__doubaoBridgeController;
 if (previousController?.version === contentVersion && previousController?.revision === contentRevision) return;

@@ -138,6 +138,13 @@ test("an old extension is blocked before generation and unauthenticated requests
   assert.equal(calls, 0);
 });
 
+test("an old media-capable extension cannot bypass prepared submission checks", async (t) => {
+  let calls = 0;
+  const { call } = await gateway(t, async () => { calls++; }, { connected: true, capabilities: ["mediaV1"] });
+  assert.equal((await call("/v1/video/submit", { ...specification, requirePrepared: true })).status, 400);
+  assert.equal(calls, 0);
+});
+
 async function mediaContext() {
   const context = vm.createContext({ URL, console, atob: (input) => Buffer.from(input, "base64").toString("binary"), Uint8Array, File,
     setTimeout: (callback) => { queueMicrotask(callback); return 1; } });
@@ -158,14 +165,16 @@ test("completion requires a new ready video; old clips and success promises do n
 async function uploadPage() {
   const context = await mediaContext();
   const previews = [];
-  const form = { querySelectorAll: (query) => query === "img" ? previews : [] };
+  const form = { id: "composer", tagName: "FORM", innerText: "视频生成 Seedance 2.0 Mini 自动·10s 9:16",
+    querySelectorAll: (query) => query === "img" ? previews : [] };
   class TextArea {
-    constructor() { this.value = ""; }
+    constructor() { this.value = ""; this.id = "editor"; this.tagName = "TEXTAREA"; }
+    getAttribute() { return null; }
     getClientRects() { return [{}]; }
     closest() { return form; }
   }
   class Input {
-    constructor() { this.type = "file"; this.accept = "image/*"; this.multiple = true; this.files = []; this.parentElement = { innerText: "" }; }
+    constructor() { this.id = "upload"; this.type = "file"; this.accept = "image/*"; this.multiple = true; this.files = []; this.parentElement = { innerText: "" }; }
     getAttribute() { return ""; }
     dispatchEvent(event) {
       if (event.type === "change") {
@@ -229,7 +238,11 @@ test("switching the pinned conversation does not return an unrelated completed v
 test("an unsent draft is preserved before uploading or sending a video request", async () => {
   const { context, editor, input, images, sends } = await uploadPage();
   editor.value = "keep my draft";
-  await assert.rejects(context.DoubaoMedia.handle({ type: "videoSubmit", images, duration: 5, ratio: "9:16", prompt: "test" }), /unsent draft/);
+  const result = await context.DoubaoMedia.handle({ type: "videoSubmit", images, duration: 5, ratio: "9:16", prompt: "test" });
+  assert.equal(result.state, "preflight_failed");
+  assert.equal(result.sendAttempted, false);
+  assert.equal(result.retrySafe, true);
+  assert.match(result.error, /unsent draft/);
   assert.equal(editor.value, "keep my draft");
   assert.equal(input.files.length, 0);
   assert.equal(sends(), 0);
@@ -257,14 +270,14 @@ test("tail extraction selects the final decoded blue frame, not the earlier red 
   assert.ok(stdout[2] > 220 && stdout[0] < 30 && stdout[1] < 30, "Expected the final blue frame");
 });
 
-async function backgroundContext(overrides = {}, probe = async () => ({ version: "0.3.1", mediaVersion: "0.3.1" })) {
+async function backgroundContext(overrides = {}, probe = async () => ({ version: "0.4.0", mediaVersion: "0.4.0" })) {
   const chrome = {
     tabs: { get: async () => ({ id: 123, url: "https://www.doubao.com/chat", status: "complete" }),
       sendMessage: async () => ({ editors: [{ selector: "textarea" }] }) },
     storage: { local: { get: async () => ({ mediaSessions: { test: { tabId: 123 } } }), set: async () => {} } },
     downloads: { search: async () => [], download: async () => 42 },
     alarms: { create() {}, onAlarm: { addListener() {} } },
-    runtime: { id: "test-extension", getManifest: () => ({ version: "0.3.1" }), onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
+    runtime: { id: "test-extension", getManifest: () => ({ version: "0.4.0" }), onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
     scripting: { executeScript: async () => {} }
   };
   Object.assign(chrome, overrides);
@@ -393,9 +406,9 @@ test("a stale webpage script is updated before a media operation, without resend
   let injected = 0;
   const context = await backgroundContext({ scripting: { executeScript: async ({ files }) => {
     assert.ok(files.includes("version.js")); injected++;
-  } } }, async () => ({ version: injected ? "0.3.1" : "0.2.1", mediaVersion: injected ? "0.3.1" : "0.2.1" }));
+  } } }, async () => ({ version: injected ? "0.4.0" : "0.2.1", mediaVersion: injected ? "0.4.0" : "0.2.1" }));
   const result = await context.testEnsureContent(123);
-  assert.equal(result.version, "0.3.1");
+  assert.equal(result.version, "0.4.0");
   assert.equal(injected, 1);
 });
 
@@ -416,14 +429,14 @@ test("new content listeners replace previous tracked listeners instead of sendin
     chrome: { runtime: { onMessage: { addListener: (listener) => listeners.add(listener), removeListener: (listener) => listeners.delete(listener) } } }
   });
   const source = await fs.readFile(new URL("../extension/content.js", import.meta.url), "utf8");
-  context.DoubaoBridgeVersion = "0.3.1";
+  context.DoubaoBridgeVersion = "0.4.0";
   vm.runInContext(source, context);
   vm.runInContext(source, context);
   assert.equal(listeners.size, 1);
-  context.DoubaoBridgeVersion = "0.3.1";
+  context.DoubaoBridgeVersion = "0.4.0";
   vm.runInContext(source, context);
   assert.equal(listeners.size, 1);
-  assert.equal(context.__doubaoBridgeController.version, "0.3.1");
+  assert.equal(context.__doubaoBridgeController.version, "0.4.0");
 });
 
 test("legacy untracked webpage listeners require a refresh and are not doubled", async () => {
@@ -438,7 +451,7 @@ test("legacy untracked webpage listeners require a refresh and are not doubled",
 
 test("diagnostics stays usable while an old extension is connected", async (t) => {
   let commands = 0;
-  const { call } = await gateway(t, async () => { commands++; }, { connected: true, extensionVersion: "0.2.0", expectedVersion: "0.3.1", capabilities: ["mediaV1"], versionMismatch: true });
+  const { call } = await gateway(t, async () => { commands++; }, { connected: true, extensionVersion: "0.2.0", expectedVersion: "0.4.0", capabilities: ["mediaV1"], versionMismatch: true });
   const result = await call("/v1/diagnostics", {});
   assert.equal(result.data.extensionVersion, "0.2.0");
   assert.equal(result.data.versionMismatch, true);
@@ -480,7 +493,7 @@ test("lazy attachment previews are requested in the background and only the deco
 test("a same-version content revision change triggers a script update", async () => {
   let injected = 0;
   const context = await backgroundContext({ scripting: { executeScript: async () => { injected++; } } },
-    async () => ({ version: "0.3.1", mediaVersion: "0.3.1", revision: injected ? "new-build" : "old-build", mediaRevision: injected ? "new-build" : "old-build" }));
+    async () => ({ version: "0.4.0", mediaVersion: "0.4.0", revision: injected ? "new-build" : "old-build", mediaRevision: injected ? "new-build" : "old-build" }));
   const result = await context.testEnsureContent(123, "new-build");
   assert.equal(result.revision, "new-build"); assert.equal(injected, 1);
 });
@@ -517,4 +530,193 @@ test("video submissions use existing account benefits without injecting a free-o
     assert.equal(sent.endsWith(script), true);
     assert.doesNotMatch(sent.slice(0, -script.length), /免费|付费|会员|额度/u);
   }
+});
+
+test("quota exhaustion and refusals end waiting while ordinary quota notices do not", async () => {
+  const { DoubaoMediaCore: { classifyMedia } } = await mediaContext();
+  for (const text of ["今日视频生成免费次数用完了，你明天再来找我继续吧。", "当前视频生成额度不足", "配额已耗尽"]) {
+    const result = classifyMedia({ videos: [], text });
+    assert.equal(result.state, "quota_exhausted");
+    assert.equal(result.retrySafe, false);
+  }
+  assert.equal(classifyMedia({ videos: [], text: "这个请求无法生成视频" }).state, "rejected");
+  assert.equal(classifyMedia({ videos: [], text: "本次生成将消耗每日免费额度，正在生成" }).state, "generating");
+});
+
+test("rotated signatures identify the same file and multiple new clips require explicit recovery", async () => {
+  const { DoubaoMediaCore: { classifyMedia } } = await mediaContext();
+  const video = (url) => ({ url, duration: 10, readyState: 4 });
+  assert.equal(classifyMedia({ videos: [video("https://example.test/clip.mp4?video_id=1&token=new&expires=200")],
+    baselineUrls: ["https://example.test/clip.mp4?expires=100&token=old&video_id=1"] }).state, "pending");
+  assert.equal(classifyMedia({ videos: [video("https://example.test/clip.mp4?video_id=2")],
+    baselineUrls: ["https://example.test/clip.mp4?video_id=1"] }).state, "ready");
+  const ambiguous = classifyMedia({ videos: [video("https://example.test/a.mp4"), video("https://example.test/b.mp4")] });
+  assert.equal(ambiguous.state, "needs_recovery");
+  assert.equal(ambiguous.candidateCount, 2);
+});
+
+test("a new video at a reused DOM position is ready and later replies do not contaminate an old task", async () => {
+  const { context } = await uploadPage();
+  const video = { id: "virtual-video", tagName: "VIDEO", currentSrc: "https://example.test/new.mp4", duration: 10,
+    readyState: 4, videoWidth: 720, videoHeight: 1280, getClientRects: () => [{}], querySelector: () => null };
+  const later = { ...video, id: "later-video", currentSrc: "https://example.test/later.mp4" };
+  const original = context.document.querySelectorAll;
+  context.document.querySelectorAll = (query) => query === "video" ? [video] : original(query);
+  context.document.body.innerText = "my submitted prompt\nvideo ready";
+  const job = { context: { conversationUrl: context.location.href, prompt: "my submitted prompt",
+    baselineKeys: ["#virtual-video"], baselineUrls: ["https://example.test/old.mp4"] } };
+  assert.equal((await context.DoubaoMedia.handle({ type: "videoStatus", job })).state, "ready");
+  const message = (kind, text, videos = []) => ({ innerText: text, getAttribute: (key) => key === "data-testid" ? kind : null,
+    querySelectorAll: () => videos });
+  const messages = [message("send_message", "my submitted prompt"), message("receive_message", "video ready", [video]),
+    message("send_message", "another generation"), message("receive_message", "今日免费次数用完了", [later])];
+  context.document.querySelectorAll = (query) => query === "video" ? [video, later] : query.includes("send_message") ? messages : original(query);
+  const result = await context.DoubaoMedia.handle({ type: "videoStatus", job });
+  assert.equal(result.state, "ready");
+  assert.equal(result.media.url, video.currentSrc);
+  const laterJob = { context: { conversationUrl: context.location.href, prompt: "another generation", baselineUrls: [video.currentSrc, later.currentSrc] } };
+  assert.equal((await context.DoubaoMedia.handle({ type: "videoStatus", job: laterJob })).state, "quota_exhausted");
+});
+
+test("preparation verifies UI settings and files without sending; settings changes invalidate it", async () => {
+  const { context, editor, input, images, sends } = await uploadPage();
+  const prepared = await context.DoubaoMedia.handle({ type: "videoPrepare", images, duration: 10, ratio: "9:16", model: "Seedance 2.0 Mini" });
+  assert.equal(prepared.state, "prepared");
+  assert.equal(prepared.sent, false);
+  assert.equal(prepared.observed.duration, 10);
+  assert.equal(input.files.length, 1);
+  assert.equal(sends(), 0);
+  editor.closest("form").innerText = "视频生成 Seedance 2.0 Mini 自动·5s 9:16";
+  const blocked = await context.DoubaoMedia.handle({ type: "videoSubmit", duration: 10, ratio: "9:16", model: "Seedance 2.0 Mini", requirePrepared: true, prompt: "one action" });
+  assert.equal(blocked.state, "preflight_failed");
+  assert.equal(blocked.sendAttempted, false);
+  assert.equal(sends(), 0);
+});
+
+test("unverifiable automatic ratio is not reported as prepared and user drafts survive preparation", async () => {
+  const { context, editor, images, sends } = await uploadPage();
+  editor.closest("form").innerText = "视频生成 Seedance 2.0 Mini 自动·10s";
+  const result = await context.DoubaoMedia.handle({ type: "videoPrepare", images, duration: 10, ratio: "9:16" });
+  assert.equal(result.state, "needs_manual_settings");
+  assert.equal(result.observed.ratio, null);
+  editor.value = "user draft";
+  assert.equal((await context.DoubaoMedia.handle({ type: "videoPrepare", images, duration: 10, ratio: "9:16" })).state, "preflight_failed");
+  assert.equal(editor.value, "user draft");
+  assert.equal(sends(), 0);
+});
+
+test("prepared attachments can be reused without duplicate uploads and media preferences are optional", async () => {
+  const { context, images, previews, sends } = await uploadPage();
+  await context.DoubaoMedia.handle({ type: "videoPrepare", images, duration: 10, ratio: "9:16" });
+  const result = await context.DoubaoMedia.handle({ type: "videoSubmit", images, duration: 10, ratio: "9:16", requirePrepared: true, prompt: "one action" });
+  assert.equal(result.state, "submitted");
+  assert.equal(result.parameterControl, "ui_verified");
+  assert.equal(previews.length, 1);
+  assert.equal(sends(), 1);
+  assert.doesNotMatch(result.context.prompt, /无字幕|背景音乐|不要对白/);
+  const next = await uploadPage();
+  await next.context.DoubaoMedia.handle({ type: "uploadImages", images: next.images });
+  const silent = await next.context.DoubaoMedia.handle({ type: "videoSubmit", duration: 10, ratio: "9:16", silent: true, noText: true, prompt: "one action" });
+  assert.match(silent.context.prompt, /不要字幕/);
+  assert.match(silent.context.prompt, /不要对白/);
+});
+
+test("compact inspection omits deep structures; generic UI clicks cannot submit", async () => {
+  const { context, editor, sends } = await uploadPage();
+  const summary = await context.DoubaoMedia.handle({ type: "inspect" });
+  const full = await context.DoubaoMedia.handle({ type: "inspect", detail: "full" });
+  assert.equal(summary.detail, "summary");
+  assert.equal(summary.composer.domText, undefined);
+  assert.equal(full.detail, "full");
+  const send = { id: "flow-end-msg-send", getClientRects: () => [{}], getAttribute: () => null, innerText: "发送" };
+  context.document.querySelectorAll = (query) => query === "#send" ? [send] : query.includes("contenteditable") ? [editor] : [];
+  await assert.rejects(context.DoubaoMedia.handle({ type: "uiClick", selector: "#send" }), /idempotent/);
+  assert.equal(sends(), 0);
+});
+
+test("focusing a session selects its bound tab, not another active conversation", async () => {
+  const updates = [];
+  const windows = [];
+  const context = await backgroundContext({
+    tabs: { get: async () => ({ id: 123, windowId: 7, active: updates.length > 0, url: "https://www.doubao.com/chat/123" }),
+      update: async (id, properties) => updates.push([id, properties]), sendMessage: async () => ({ editors: [{}], visibility: "visible" }) },
+    windows: { update: async (id, properties) => windows.push([id, properties]) }
+  });
+  const result = await context.testCommand({ type: "sessionFocus", sessionId: "test" });
+  assert.equal(result.tabId, 123);
+  assert.equal(result.active, true);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0][0], 123);
+  assert.equal(windows[0][0], 7);
+});
+
+test("a certain pre-send failure resumes only explicitly with the same job and key", async (t) => {
+  let calls = 0;
+  const { call } = await gateway(t, async () => ++calls === 1
+    ? { state: "preflight_failed", sendAttempted: false, retrySafe: true, error: "editor hidden" }
+    : { state: "submitted", sendAttempted: true, context: { conversationUrl: "https://www.doubao.com/chat/123" } });
+  const first = await call("/v1/video/submit", specification);
+  const repeated = await call("/v1/video/submit", specification);
+  assert.equal(repeated.data.reused, true);
+  assert.equal(calls, 1);
+  assert.equal((await call("/v1/video/status", { jobId: first.data.jobId })).data.error, "editor hidden");
+  const resumed = await call("/v1/video/submit", { ...specification, retryPreflight: true });
+  assert.equal(resumed.data.jobId, first.data.jobId);
+  assert.equal(resumed.data.state, "submitted");
+  assert.equal(calls, 2);
+});
+
+test("old idempotency records remain reusable after optional settings are added", async (t) => {
+  const crypto = await import("node:crypto");
+  const root = await temporary(t);
+  const id = "22222222-2222-4222-8222-222222222222";
+  const spec = { sessionId: specification.sessionId, prompt: specification.prompt, imagePaths: [], duration: 5, ratio: "9:16",
+    imageRole: "reference", inputSelector: null, uploadTriggerSelector: null, controls: null };
+  const dir = path.join(root, "media", "jobs", id);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "job.json"), JSON.stringify({ id, idempotencyKey: specification.idempotencyKey, spec,
+    fingerprint: crypto.createHash("sha256").update(JSON.stringify(spec)).digest("hex"), state: "unknown" }));
+  let calls = 0;
+  const { call } = await gateway(t, async () => { calls++; }, undefined, root);
+  const result = await call("/v1/video/submit", specification);
+  assert.equal(result.status, 200);
+  assert.equal(result.data.jobId, id);
+  assert.equal(result.data.reused, true);
+  assert.equal(calls, 0);
+});
+
+test("downloaded status and task overview remain available offline without regressing completion", async (t) => {
+  const root = await temporary(t);
+  const id = "33333333-3333-4333-8333-333333333333";
+  const dir = path.join(root, "media", "jobs", id);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "job.json"), JSON.stringify({ id, sessionId: specification.sessionId, state: "downloaded",
+    adopted: true, localPath: path.join(dir, "video.mp4"), video: { duration: 10, width: 720, height: 1280 } }));
+  let calls = 0;
+  const { call } = await gateway(t, async () => { calls++; }, { connected: false }, root);
+  assert.equal((await call("/v1/video/status", { jobId: id })).data.state, "downloaded");
+  const overview = (await call("/v1/video/jobs", { sessionId: specification.sessionId })).data;
+  assert.equal(overview.total, 1);
+  assert.equal(overview.adopted, 1);
+  assert.equal(overview.confirmedSubmissions, 0);
+  assert.equal(overview.quotaRemaining, null);
+  assert.equal(overview.jobs[0].video.duration, 10);
+  assert.equal(calls, 0);
+});
+
+test("Chinese prompts survive HTTP chunks split inside UTF-8 characters", async (t) => {
+  const root = await temporary(t);
+  let received;
+  const handler = createMediaRoutes({ root, key: "test-key", connection: () => ({ connected: true, capabilities: ["mediaV1"] }),
+    enqueue: (operation) => operation(), command: async (_type, payload) => { received = payload.prompt; return { state: "submitted" }; } });
+  const prompt = "只翻开账本，不增加纸片和字幕。";
+  const bytes = Buffer.from(JSON.stringify({ ...specification, prompt }));
+  const chunks = [...bytes].map((byte) => Buffer.from([byte]));
+  const request = { url: "/v1/video/submit", method: "POST", headers: { authorization: "Bearer test-key" },
+    async *[Symbol.asyncIterator]() { yield* chunks; } };
+  let reply;
+  const response = { writeHead() {}, end: (text) => { reply = JSON.parse(text); } };
+  await handler(request, response);
+  assert.equal(reply.ok, true);
+  assert.equal(received, prompt);
 });

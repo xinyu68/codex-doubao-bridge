@@ -1,4 +1,4 @@
-# 豆包网页媒体桥接 0.3.1
+# 豆包网页媒体桥接 0.4.0
 
 通过已登录豆包网页的正常附件和视频控件操作，不读取/导出Cookie，不调用官方付费API。
 
@@ -6,7 +6,7 @@
 
 在Chrome打开 chrome://extensions，找到 Local Doubao Bridge，点“重新加载”，然后刷新豆包网页。新增的 downloads/storage 权限用于下载成片和固定标签页；如Chrome停用了扩展，按界面提示重新启用。
 
-桥接服务的 /v1/health 应显示 extensionVersion=0.3.1 和 mediaV1。后台脚本与权限不会因保存文件自动更新。
+桥接服务的 /v1/health 应显示 extensionVersion=0.4.0、workerVersion=0.4.0、mediaV1 和 mediaWorkflowV2。后台脚本与权限不会因保存文件自动更新。
 
 ## 调用
 
@@ -23,11 +23,14 @@ node .\media-cli.mjs --request .\requests\session.json
 | --- | --- | --- |
 | tabs | doubao_media_tabs | 列出已打开豆包标签页 |
 | session | doubao_media_session | 新开独立后台标签页；可传tabId绑定已有页 |
+| focus | doubao_media_focus | 激活固定标签页并聚焦 Chrome 窗口，不刷新、不发送 |
 | inspect | doubao_page | 读取上传控件、按钮、下拉框、真实视频元素 |
 | click | doubao_ui_click | 点击检查得到的唯一控件 |
 | upload | doubao_upload_images | 上传真实本地图片，确认已加载缩略图 |
+| prepare | doubao_video_prepare | 激活任务页，应用已检查控件，核验参数并上传；不发送 |
 | submit | doubao_video_submit | 提交一次带图视频请求，保存jobId |
 | status | doubao_video_status | 读取已有任务媒体状态，不发送新消息 |
+| jobs | doubao_video_jobs | 读取任务概览，可按 sessionId 筛选；不查网页、不推算额度 |
 | adopt | doubao_video_adopt | 明确登记已在网页生成的视频，不重新生成 |
 | download | doubao_video_download | 浏览器下载，验证后复制到工作区 |
 | tail | doubao_video_tail | 用FFmpeg提取已下载视频的最后一帧 |
@@ -84,6 +87,22 @@ $taskReadBack = Get-Content -LiteralPath $taskRequestPath -Raw -Encoding UTF8 | 
 
 同一个idempotencyKey与相同参数返回已有jobId；服务重启后仍会加载原任务。未知结果记录为unknown，不能自动新建尝试。只有故意重做时才换新key。
 
+只有 `preflight_failed` 且 `sendAttempted=false`、`retrySafe=true` 才表示确定没有发送。修复后以原参数、原 key 加 `retryPreflight=true` 继续一次；未加该标志仍只返回原记录。`unknown` 不会被此标志重发。升级前已有的 key 和任务记录仍可复用。
+
+## 准备与核验（0.4.0）
+
+默认 inspect 返回 summary；需要完整弹层结构时指定 `detail:"full"`。后台编辑器隐藏时使用 `focus`；查询状态不自动抢占窗口。prepare 默认 activateTab=true，应用调用方本轮检查到的 controls，核验真实视频模式、时长、比例和可选 model 后上传。`prepared` 才能继续；`needs_manual_settings` 返回实际值与页面，设置后重新 prepare。自动画幅不能据此宣称已锁定 9:16；网页不支持或无法核验的设置不会靠提示词伪装成功。
+
+~~~json
+{"operation":"prepare","sessionId":"实际sessionId","imagePaths":["D:/video-project/references/character.png"],"duration":10,"ratio":"9:16","model":"Seedance 2.0 Mini"}
+{"operation":"submit","sessionId":"实际sessionId","duration":10,"ratio":"9:16","model":"Seedance 2.0 Mini","requirePrepared":true,"silent":true,"noText":true,"idempotencyKey":"episode001-shot01-attempt01","prompt":"按本镜头脚本执行一个动作。"}
+{"operation":"jobs","sessionId":"实际sessionId","limit":25}
+~~~
+
+静音和无字仅在项目需要时设置 `silent:true` / `noText:true`；默认不额外限制声音或文字。这些仍是生成提示词偏好，须检查原片。成功准备后通常省略 submit 的 imagePaths；若再次传完全相同文件且附件仍在，则复用，不重复上传。已有其他附件、用户草稿或准备后的参数变化会阻止提交。准备凭据只保存在当前网页脚本内，刷新或脚本升级后重新准备。
+
+status 返回 `quota_exhausted`、`rejected` 或 `failed` 时停止等待和重试。DOM 元素位置不是视频身份；同一媒体的临时签名变化也不算新视频。能识别消息节点时限定当前请求的回复；多个新视频不明确时返回 needs_recovery，须明确 adopt。已下载任务保留 downloaded，可在断开 Chrome 时读回本地记录。jobs 的 confirmedSubmissions 表示网页提交确认，不是计费或实际成功次数；adopted 单列，quotaRemaining 未知返回 null。它不能判断整条成片是否完成或自动解释剪辑中的素材复用。
+
 duration/ratio未配置网页控件时是提示词要求，返回parameterControl=prompt_only，不能宣称网页参数已锁定。可先inspect，再传controls，每项包含selector；select使用value，其他下拉框还要提供optionSelector。
 
 ~~~json
@@ -123,7 +142,7 @@ Chrome权限依据：[下载API](https://developer.chrome.com/docs/extensions/re
 工具栏新增诊断面板，可查看扩展/后台/网页版本。以后更新已采用版本控制的网页脚本，可通过“更新网页脚本”重新注入；从 0.2.x 升级需要刷新豆包页一次，避免旧消息监听器重复响应。更新后台文件仍需重载扩展。
 
 上传自动选择器优先使用聊天输入区中的唯一图片输入，页面检查会标注 `inComposer`。参考图片预览也限定到输入区域。仍需在真实网页确认 `loaded_preview`，再提交视频任务。
-0.3.1 的附件确认会排除 SVG 占位图和界面图标，并触发后台标签页中真实缩略图的延迟加载。`attachments` 返回实际尺寸、加载方式与占位分类，便于复核。只有真实图片已解码，才返回 `loaded_preview`。
+0.4.0 的附件确认会排除 SVG 占位图和界面图标，并触发后台标签页中真实缩略图的延迟加载。`attachments` 返回实际尺寸、加载方式与占位分类，便于复核。只有真实图片已解码，才返回 `loaded_preview`。
 
 网页修订值位于 `extension/build.json` 与 `extension/version.js`，两者更新时保持一致。同版本的网页适配更新可自动重新注入；后台脚本或 manifest 的更新仍需 Chrome 重载扩展。
 ## 专用视频界面与账号权益

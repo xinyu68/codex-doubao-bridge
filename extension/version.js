@@ -1,2 +1,2 @@
-globalThis.DoubaoBridgeVersion = "0.3.1";
-globalThis.DoubaoBridgeRevision = "video-controls-v14";
+globalThis.DoubaoBridgeVersion = "0.4.0";
+globalThis.DoubaoBridgeRevision = "video-workflow-v15";

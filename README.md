@@ -96,13 +96,17 @@ Skill 包含分镜素材检查、提示词组织、固定会话、生成次数�
 | `doubao_ask` / `doubao_delegate` | 问答 / 新对话独立文本任务 |
 | `doubao_status` / `doubao_diagnostics` | 连接与版本诊断 |
 | `doubao_media_tabs` / `doubao_media_session` | 查找豆包页 / 新建或绑定固定媒体会话 |
+| `doubao_media_focus` / `doubao_video_prepare` | 激活固定页 / 核验网页参数和参考图，不发送 |
 | `doubao_page` / `doubao_ui_click` | 检查真实网页控件 / 操作检查到的控件 |
 | `doubao_upload_images` | 上传本地图片，核验已解码预览 |
 | `doubao_video_submit` / `doubao_video_status` | 提交一次生成 / 查询原任务 |
+| `doubao_video_jobs` | 读取持久化任务概览，区分新提交、采用和已下载 |
 | `doubao_video_adopt` | 登记网页已有视频，避免重新生成 |
 | `doubao_video_download` / `doubao_video_tail` | 下载并验证 / 提取尾帧 |
 
 完整媒体参数与 CLI 示例见 [媒体操作说明](README-media.md)，创作流程见 [视频 Skill](skills/doubao-chat/SKILL.md)。插件工具按 Codex 当前显示的名称调用，可能带插件命名空间。
+
+0.6.0（Chrome 扩展 0.4.0）修复视频元素位置复用导致的漏判，识别额度耗尽和平台拒绝，默认返回精简页面信息。推荐先 `prepare` 核验真实参数，再以 `requirePrepared=true` 提交；界面无法读回参数会停止，不将提示词当作网页设置。明确发送前失败可修复后用原 key 和 `retryPreflight=true` 继续一次；未知发送结果始终查原任务。静音和无字按项目选择 `silent` / `noText`，默认不追加。任务概览不推算账号剩余额度，也不替代逐镜验收。
 
 ## 连接原理与排查
 
@@ -127,7 +131,7 @@ node .\service.mjs run     # 可选：手工前台调试，用 Ctrl+C 结束
 - **`connected=false`**：先在 Codex 调用连接检查，再确认扩展已启用、豆包已登录，等待心跳重连。点击 Chrome 工具栏的 Local Doubao Bridge 图标可查看诊断面板；没有 MCP 客户端时显示未连接是正常现象
 - **版本不一致 / 缺少 `mediaV1`**：在扩展管理页重新加载，再刷新豆包页
 - **密钥不匹配 / 其他安装占用端口**：不重复启动，先检查已有服务与扩展来源。默认只使用 `127.0.0.1:8765`
-- **后台页无法填写或发送**：将该视频会话的固定标签页放到前台；不改用用户另一个对话
+- **后台页无法填写或发送**：使用 `doubao_media_focus` 激活固定任务页；`doubao_video_prepare` 默认会先激活再核验参数。不改用用户另一个对话
 - **视频下载验证失败**：检查 FFmpeg/ffprobe；可通过 `FFMPEG_PATH` / `FFPROBE_PATH` 指定程序路径
 - **已有其他 `doubao_local`**：安装脚本默认拒绝覆盖。确实迁移时使用 `-ReplaceExisting`，先停掉旧服务，移除旧扩展，再加载新目录。旧 Skill 中被更新的文件会备份到 `.runtime/skill-backups`
 
